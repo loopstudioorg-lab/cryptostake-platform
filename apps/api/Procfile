@@ -1,0 +1,2 @@
+web: cd apps/api && npx prisma migrate deploy && node dist/main.js
+worker: cd apps/workers && node dist/index.js

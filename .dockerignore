@@ -1,0 +1,42 @@
+# Dependencies
+node_modules
+**/node_modules
+
+# Build outputs
+dist
+build
+.next
+.turbo
+
+# Development files
+*.log
+.env*
+!.env.example
+.DS_Store
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Testing
+coverage
+.nyc_output
+
+# Mobile specific
+apps/mobile/ios
+apps/mobile/android
+apps/mobile/.expo
+
+# Git
+.git
+.gitignore
+
+# Documentation
+*.md
+LICENSE
+
+# Misc
+Dockerfile*
+docker-compose*

@@ -1,0 +1,556 @@
+// Prisma Schema for Crypto Staking Platform
+// PostgreSQL database with ledger-based accounting
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== USER & AUTH ====================
+
+enum Role {
+  USER
+  SUPPORT
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum KycStatus {
+  NOT_STARTED
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model User {
+  id                String    @id @default(uuid())
+  email             String    @unique
+  passwordHash      String
+  role              Role      @default(USER)
+  emailVerified     Boolean   @default(false)
+  emailVerifiedAt   DateTime?
+  twoFactorEnabled  Boolean   @default(false)
+  kycStatus         KycStatus @default(NOT_STARTED)
+  displayName       String?
+  timezone          String    @default("UTC")
+  notificationsEnabled Boolean @default(true)
+  dailyWithdrawalLimit Decimal @default(10000) @db.Decimal(36, 18)
+  isActive          Boolean   @default(true)
+  lastLoginAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  // Relations
+  sessions           Session[]
+  twoFactorSecret    TwoFactorSecret?
+  recoveryCodes      RecoveryCode[]
+  depositAddresses   DepositAddress[]
+  deposits           Deposit[]
+  stakePositions     StakePosition[]
+  withdrawalRequests WithdrawalRequest[]
+  ledgerEntries      LedgerEntry[]
+  balances           BalanceCache[]
+  auditLogsAsActor   AuditLog[]          @relation("AuditActor")
+  notifications      Notification[]
+
+  @@index([email])
+  @@index([role])
+  @@index([createdAt])
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  userId       String
+  refreshToken String   @unique
+  deviceName   String
+  ipAddress    String
+  userAgent    String
+  lastActiveAt DateTime @default(now())
+  createdAt    DateTime @default(now())
+  expiresAt    DateTime
+  isRevoked    Boolean  @default(false)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([refreshToken])
+  @@index([expiresAt])
+}
+
+model TwoFactorSecret {
+  id            String   @id @default(uuid())
+  userId        String   @unique
+  encryptedSecret String // AES-256-GCM encrypted
+  isVerified    Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  verifiedAt    DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model RecoveryCode {
+  id        String   @id @default(uuid())
+  userId    String
+  codeHash  String   // Hashed recovery code
+  isUsed    Boolean  @default(false)
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  email     String
+  tokenHash String   @unique
+  expiresAt DateTime
+  isUsed    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([email])
+  @@index([tokenHash])
+}
+
+model EmailVerificationToken {
+  id        String   @id @default(uuid())
+  email     String
+  tokenHash String   @unique
+  expiresAt DateTime
+  isUsed    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([email])
+  @@index([tokenHash])
+}
+
+// ==================== BLOCKCHAIN ====================
+
+model Chain {
+  id                    String   @id @default(uuid())
+  name                  String   @unique
+  symbol                String
+  chainId               Int      @unique
+  rpcUrl                String
+  explorerUrl           String
+  nativeAssetSymbol     String
+  confirmationsRequired Int      @default(12)
+  isActive              Boolean  @default(true)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  // Relations
+  assets           Asset[]
+  depositAddresses DepositAddress[]
+  deposits         Deposit[]
+  withdrawals      WithdrawalRequest[]
+  ledgerEntries    LedgerEntry[]
+  balances         BalanceCache[]
+  treasuryWallets  TreasuryWallet[]
+
+  @@index([chainId])
+  @@index([isActive])
+}
+
+model Asset {
+  id              String   @id @default(uuid())
+  chainId         String
+  name            String
+  symbol          String
+  decimals        Int
+  contractAddress String?  // null for native asset
+  isNative        Boolean  @default(false)
+  iconUrl         String?
+  priceUsd        Decimal  @default(0) @db.Decimal(36, 18)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  chain Chain @relation(fields: [chainId], references: [id])
+
+  // Relations
+  pools              Pool[]
+  deposits           Deposit[]
+  withdrawalRequests WithdrawalRequest[]
+  ledgerEntries      LedgerEntry[]
+  balances           BalanceCache[]
+
+  @@unique([chainId, contractAddress])
+  @@unique([chainId, symbol])
+  @@index([symbol])
+  @@index([isActive])
+}
+
+model TreasuryWallet {
+  id                   String   @id @default(uuid())
+  chainId              String
+  address              String
+  label                String
+  encryptedPrivateKey  String?  // AES-256-GCM encrypted, null if external
+  isHotWallet          Boolean  @default(true)
+  isActive             Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  chain Chain @relation(fields: [chainId], references: [id])
+
+  @@unique([chainId, address])
+  @@index([chainId])
+}
+
+// ==================== DEPOSITS ====================
+
+model DepositAddress {
+  id             String   @id @default(uuid())
+  userId         String
+  chainId        String
+  address        String   @unique
+  derivationPath String?
+  derivationIndex Int?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chain Chain @relation(fields: [chainId], references: [id])
+
+  deposits Deposit[]
+
+  @@unique([userId, chainId])
+  @@index([address])
+  @@index([userId])
+}
+
+enum DepositStatus {
+  AWAITING
+  CONFIRMING
+  CONFIRMED
+  FAILED
+}
+
+model Deposit {
+  id               String        @id @default(uuid())
+  userId           String
+  assetId          String
+  chainId          String
+  depositAddressId String
+  txHash           String
+  logIndex         Int?          // For ERC-20 events
+  fromAddress      String
+  amount           Decimal       @db.Decimal(36, 18)
+  confirmations    Int           @default(0)
+  status           DepositStatus @default(CONFIRMING)
+  confirmedAt      DateTime?
+  failedAt         DateTime?
+  failureReason    String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  user           User           @relation(fields: [userId], references: [id])
+  asset          Asset          @relation(fields: [assetId], references: [id])
+  chain          Chain          @relation(fields: [chainId], references: [id])
+  depositAddress DepositAddress @relation(fields: [depositAddressId], references: [id])
+
+  // Prevent duplicate deposits
+  @@unique([txHash, logIndex, chainId])
+  @@index([userId])
+  @@index([status])
+  @@index([txHash])
+  @@index([createdAt])
+}
+
+// ==================== STAKING ====================
+
+enum PoolType {
+  FLEXIBLE
+  FIXED
+}
+
+model Pool {
+  id            String   @id @default(uuid())
+  name          String
+  description   String?
+  assetId       String
+  type          PoolType
+  lockDays      Int?     // null for flexible
+  currentApr    Decimal  @db.Decimal(10, 4) // e.g., 12.5000 for 12.5%
+  minStake      Decimal  @db.Decimal(36, 18)
+  maxStake      Decimal? @db.Decimal(36, 18)
+  totalCapacity Decimal? @db.Decimal(36, 18)
+  totalStaked   Decimal  @default(0) @db.Decimal(36, 18)
+  isActive      Boolean  @default(true)
+  cooldownHours Int      @default(0) // For flexible pools
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  asset Asset @relation(fields: [assetId], references: [id])
+
+  aprSchedules   AprSchedule[]
+  stakePositions StakePosition[]
+
+  @@index([assetId])
+  @@index([isActive])
+  @@index([type])
+}
+
+model AprSchedule {
+  id            String    @id @default(uuid())
+  poolId        String
+  apr           Decimal   @db.Decimal(10, 4)
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  createdBy     String?
+  createdAt     DateTime  @default(now())
+
+  pool Pool @relation(fields: [poolId], references: [id])
+
+  @@index([poolId])
+  @@index([effectiveFrom])
+}
+
+enum StakeStatus {
+  ACTIVE
+  UNSTAKING
+  COMPLETED
+  CANCELLED
+}
+
+model StakePosition {
+  id                     String      @id @default(uuid())
+  userId                 String
+  poolId                 String
+  amount                 Decimal     @db.Decimal(36, 18)
+  rewardsAccrued         Decimal     @default(0) @db.Decimal(36, 18)
+  rewardsClaimed         Decimal     @default(0) @db.Decimal(36, 18)
+  lastRewardCalculation  DateTime    @default(now())
+  status                 StakeStatus @default(ACTIVE)
+  lockedUntil            DateTime?
+  unstakeRequestedAt     DateTime?
+  cooldownEndsAt         DateTime?
+  unstakedAt             DateTime?
+  createdAt              DateTime    @default(now())
+  updatedAt              DateTime    @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+  pool Pool @relation(fields: [poolId], references: [id])
+
+  @@index([userId])
+  @@index([poolId])
+  @@index([status])
+  @@index([lockedUntil])
+}
+
+// ==================== WITHDRAWALS ====================
+
+enum WithdrawalStatus {
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+  PROCESSING
+  SENT
+  CONFIRMING
+  CONFIRMED
+  COMPLETED
+  PAID_MANUALLY
+  FAILED
+}
+
+model WithdrawalRequest {
+  id                 String           @id @default(uuid())
+  userId             String
+  assetId            String
+  chainId            String
+  amount             Decimal          @db.Decimal(36, 18)
+  fee                Decimal          @default(0) @db.Decimal(36, 18)
+  netAmount          Decimal          @db.Decimal(36, 18) // amount - fee
+  destinationAddress String
+  status             WithdrawalStatus @default(PENDING_REVIEW)
+  userNotes          String?
+  adminNotes         String?
+  reviewedBy         String?
+  reviewedAt         DateTime?
+  manualProofUrl     String?
+  manualProofNotes   String?
+  idempotencyKey     String           @unique
+  fraudScore         Int              @default(0) // 0-100
+  fraudIndicators    Json?            // Array of fraud indicators
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  user  User  @relation(fields: [userId], references: [id])
+  asset Asset @relation(fields: [assetId], references: [id])
+  chain Chain @relation(fields: [chainId], references: [id])
+
+  payoutTx PayoutTx?
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([destinationAddress])
+}
+
+enum PayoutTxStatus {
+  PENDING
+  SENT
+  CONFIRMING
+  CONFIRMED
+  FAILED
+}
+
+model PayoutTx {
+  id                  String        @id @default(uuid())
+  withdrawalRequestId String        @unique
+  txHash              String?
+  nonce               Int?
+  gasPrice            Decimal?      @db.Decimal(36, 18)
+  gasLimit            BigInt?
+  gasUsed             BigInt?
+  status              PayoutTxStatus @default(PENDING)
+  confirmations       Int           @default(0)
+  errorMessage        String?
+  attempts            Int           @default(0)
+  sentAt              DateTime?
+  confirmedAt         DateTime?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  withdrawalRequest WithdrawalRequest @relation(fields: [withdrawalRequestId], references: [id])
+
+  @@index([txHash])
+  @@index([status])
+}
+
+// ==================== LEDGER ====================
+
+enum LedgerEntryType {
+  DEPOSIT_CONFIRMED
+  STAKE_CREATED
+  STAKE_CANCELLED
+  UNSTAKE_COMPLETED
+  REWARD_ACCRUED
+  REWARD_CLAIMED
+  WITHDRAWAL_REQUESTED
+  WITHDRAWAL_REJECTED
+  WITHDRAWAL_PAID
+  ADJUSTMENT
+}
+
+enum LedgerDirection {
+  CREDIT
+  DEBIT
+}
+
+model LedgerEntry {
+  id            String           @id @default(uuid())
+  userId        String?          // null for treasury/system entries
+  assetId       String
+  chainId       String
+  entryType     LedgerEntryType
+  direction     LedgerDirection
+  amount        Decimal          @db.Decimal(36, 18)
+  balanceAfter  Decimal?         @db.Decimal(36, 18) // Running balance snapshot
+  referenceType String           // e.g., "Deposit", "StakePosition", "WithdrawalRequest"
+  referenceId   String
+  metadata      Json?            // txHash, block, notes, etc.
+  createdAt     DateTime         @default(now())
+
+  user  User?  @relation(fields: [userId], references: [id])
+  asset Asset  @relation(fields: [assetId], references: [id])
+  chain Chain  @relation(fields: [chainId], references: [id])
+
+  @@index([userId])
+  @@index([assetId])
+  @@index([entryType])
+  @@index([referenceType, referenceId])
+  @@index([createdAt])
+}
+
+model BalanceCache {
+  id                 String   @id @default(uuid())
+  userId             String
+  assetId            String
+  chainId            String
+  available          Decimal  @default(0) @db.Decimal(36, 18)
+  staked             Decimal  @default(0) @db.Decimal(36, 18)
+  rewardsAccrued     Decimal  @default(0) @db.Decimal(36, 18)
+  withdrawalsPending Decimal  @default(0) @db.Decimal(36, 18)
+  updatedAt          DateTime @updatedAt
+
+  user  User  @relation(fields: [userId], references: [id])
+  asset Asset @relation(fields: [assetId], references: [id])
+  chain Chain @relation(fields: [chainId], references: [id])
+
+  @@unique([userId, assetId, chainId])
+  @@index([userId])
+}
+
+// ==================== AUDIT & NOTIFICATIONS ====================
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  actorId   String?
+  actorEmail String?
+  action    String
+  entity    String
+  entityId  String
+  before    Json?
+  after     Json?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  actor User? @relation("AuditActor", fields: [actorId], references: [id])
+
+  @@index([actorId])
+  @@index([entity, entityId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  type      String   // deposit_confirmed, withdrawal_approved, etc.
+  title     String
+  message   String
+  data      Json?
+  isRead    Boolean  @default(false)
+  readAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([isRead])
+  @@index([createdAt])
+}
+
+// ==================== SYSTEM ====================
+
+model SystemConfig {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     Json
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@index([key])
+}
+
+model AddressWhitelist {
+  id        String   @id @default(uuid())
+  userId    String
+  chainId   String
+  address   String
+  label     String?
+  addedAt   DateTime @default(now())
+  cooldownEndsAt DateTime // 24h after adding
+
+  @@unique([userId, chainId, address])
+  @@index([userId])
+}

@@ -1,0 +1,11 @@
+[phases.setup]
+nixPkgs = ["nodejs_20", "openssl"]
+
+[phases.install]
+cmds = ["npm install -g pnpm", "pnpm install"]
+
+[phases.build]
+cmds = ["cd apps/api && npx prisma generate && pnpm build"]
+
+[start]
+cmd = "cd apps/api && npx prisma migrate deploy && node dist/main.js"

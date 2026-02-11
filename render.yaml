@@ -1,0 +1,75 @@
+# Render.com Blueprint for CryptoStake
+# Deploy with: https://render.com/deploy
+
+services:
+  # NestJS API
+  - type: web
+    name: cryptostake-api
+    env: node
+    plan: free
+    buildCommand: npm install -g pnpm && pnpm install && cd apps/api && npx prisma generate && pnpm build
+    startCommand: cd apps/api && npx prisma migrate deploy && node dist/main.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      - key: DATABASE_URL
+        fromDatabase:
+          name: cryptostake-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: cryptostake-redis
+          property: connectionString
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: MASTER_KEY
+        generateValue: true
+      - key: JWT_ACCESS_EXPIRES
+        value: 15m
+      - key: JWT_REFRESH_EXPIRES
+        value: 7d
+      - key: CORS_ORIGINS
+        sync: false
+
+  # Background Workers
+  - type: worker
+    name: cryptostake-workers
+    env: node
+    plan: free
+    buildCommand: npm install -g pnpm && pnpm install && cd apps/api && npx prisma generate && cd ../workers && pnpm build
+    startCommand: cd apps/workers && node dist/index.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: cryptostake-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: cryptostake-redis
+          property: connectionString
+      - key: MASTER_KEY
+        sync: false
+      - key: ETH_RPC_URL
+        sync: false
+      - key: BSC_RPC_URL
+        sync: false
+      - key: POLYGON_RPC_URL
+        sync: false
+
+databases:
+  - name: cryptostake-db
+    plan: free
+    databaseName: cryptostake
+    user: cryptostake
+
+# Note: Render free tier doesn't include Redis
+# Use Upstash for free Redis: https://upstash.com

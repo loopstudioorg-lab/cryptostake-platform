@@ -1,0 +1,117 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: cryptostake-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cryptostake
+      POSTGRES_PASSWORD: cryptostake_dev_password
+      POSTGRES_DB: cryptostake
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cryptostake -d cryptostake"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: cryptostake-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: ./apps/api/Dockerfile
+    container_name: cryptostake-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://cryptostake:cryptostake_dev_password@postgres:5432/cryptostake
+      REDIS_URL: redis://redis:6379
+      JWT_ACCESS_SECRET: dev_access_secret_change_in_production_min_32_chars
+      JWT_ACCESS_EXPIRES: 15m
+      JWT_REFRESH_SECRET: dev_refresh_secret_change_in_production_min_32_chars
+      JWT_REFRESH_EXPIRES: 7d
+      MASTER_KEY: dev_master_encryption_key_32ch!
+      PORT: 3001
+      CORS_ORIGINS: http://localhost:3000,http://localhost:19006
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./apps/api:/app/apps/api
+      - ./packages:/app/packages
+      - /app/node_modules
+      - /app/apps/api/node_modules
+
+  workers:
+    build:
+      context: .
+      dockerfile: ./apps/workers/Dockerfile
+    container_name: cryptostake-workers
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://cryptostake:cryptostake_dev_password@postgres:5432/cryptostake
+      REDIS_URL: redis://redis:6379
+      MASTER_KEY: dev_master_encryption_key_32ch!
+      ETH_RPC_URL: ${ETH_RPC_URL:-https://eth.llamarpc.com}
+      BSC_RPC_URL: ${BSC_RPC_URL:-https://bsc-dataseed.binance.org}
+      POLYGON_RPC_URL: ${POLYGON_RPC_URL:-https://polygon-rpc.com}
+      ETH_CONFIRMATIONS: 12
+      BSC_CONFIRMATIONS: 15
+      POLYGON_CONFIRMATIONS: 128
+    volumes:
+      - ./apps/workers:/app/apps/workers
+      - ./packages:/app/packages
+      - /app/node_modules
+      - /app/apps/workers/node_modules
+
+  web:
+    build:
+      context: .
+      dockerfile: ./apps/web/Dockerfile
+    container_name: cryptostake-web
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./apps/web:/app/apps/web
+      - ./packages:/app/packages
+      - /app/node_modules
+      - /app/apps/web/node_modules
+      - /app/apps/web/.next
+
+volumes:
+  postgres_data:
+  redis_data:
