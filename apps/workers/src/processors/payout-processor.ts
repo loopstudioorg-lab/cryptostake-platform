@@ -298,7 +298,7 @@ async function checkPayoutStatus(prisma: PrismaClient, data: CheckPayoutStatusDa
 
   if (confirmations >= chain.confirmationsRequired) {
     // Transaction confirmed
-    await prisma.$transaction(async (tx) => {
+    await prisma.$transaction(async (tx: PrismaClient) => {
       await tx.payoutTx.update({
         where: { id: payoutTx.id },
         data: {

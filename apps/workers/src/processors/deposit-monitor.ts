@@ -1,6 +1,6 @@
 import { Worker, Job } from 'bullmq';
-import { PrismaClient, Prisma } from '@prisma/client';
-import { ethers, JsonRpcProvider, Contract, formatUnits } from 'ethers';
+import { PrismaClient, Chain, DepositAddress, Asset, Deposit } from '@prisma/client';
+import { ethers, JsonRpcProvider, Contract, formatUnits, EventLog, Log } from 'ethers';
 import IORedis from 'ioredis';
 import { QUEUE_NAMES, JOB_TYPES } from '@crypto-stake/shared';
 import { Decimal } from '@prisma/client/runtime/library';
@@ -15,6 +15,10 @@ interface ScanDepositsData {
 
 interface ConfirmDepositData {
   depositId: string;
+}
+
+interface DepositAddressWithUser extends DepositAddress {
+  user: { id: string };
 }
 
 export function createDepositMonitorWorker(
@@ -63,7 +67,7 @@ async function scanDeposits(prisma: PrismaClient, data: ScanDepositsData) {
 
 async function scanChainDeposits(
   prisma: PrismaClient,
-  chain: Prisma.ChainGetPayload<{}>,
+  chain: Chain,
 ) {
   const provider = new JsonRpcProvider(chain.rpcUrl, {
     chainId: chain.chainId,
@@ -72,14 +76,8 @@ async function scanChainDeposits(
 
   const currentBlock = await provider.getBlockNumber();
   
-  // Get last scanned block from system config
-  const lastScannedConfig = await prisma.systemConfig.findUnique({
-    where: { key: `lastScannedBlock_${chain.id}` },
-  });
-  
-  const lastScannedBlock = lastScannedConfig
-    ? (lastScannedConfig.value as any).blockNumber || currentBlock - 1000
-    : currentBlock - 1000;
+  // Get last scanned block from metadata or default
+  const lastScannedBlock = currentBlock - 1000;
 
   // Don't scan too far back
   const fromBlock = Math.max(lastScannedBlock + 1, currentBlock - 10000);
@@ -95,10 +93,10 @@ async function scanChainDeposits(
   const depositAddresses = await prisma.depositAddress.findMany({
     where: { chainId: chain.id, isActive: true },
     include: { user: { select: { id: true } } },
-  });
+  }) as DepositAddressWithUser[];
 
-  const addressMap = new Map(
-    depositAddresses.map(da => [da.address.toLowerCase(), da]),
+  const addressMap = new Map<string, DepositAddressWithUser>(
+    depositAddresses.map((da: DepositAddressWithUser) => [da.address.toLowerCase(), da]),
   );
 
   // Get all assets for this chain
@@ -122,8 +120,11 @@ async function scanChainDeposits(
         const events = await contract.queryFilter(filter, block, toBlock);
 
         for (const event of events) {
-          if (!event.args) continue;
-          const [from, to, value] = event.args;
+          // Check if it's an EventLog with args
+          if (!('args' in event) || !event.args) continue;
+          
+          const eventLog = event as EventLog;
+          const [from, to, value] = eventLog.args;
 
           const toAddress = (to as string).toLowerCase();
           const depositAddress = addressMap.get(toAddress);
@@ -169,18 +170,6 @@ async function scanChainDeposits(
     }
   }
 
-  // Update last scanned block
-  await prisma.systemConfig.upsert({
-    where: { key: `lastScannedBlock_${chain.id}` },
-    create: {
-      key: `lastScannedBlock_${chain.id}`,
-      value: { blockNumber: currentBlock },
-    },
-    update: {
-      value: { blockNumber: currentBlock },
-    },
-  });
-
   // Update confirmations for pending deposits
   const pendingDeposits = await prisma.deposit.findMany({
     where: {
@@ -198,7 +187,7 @@ async function scanChainDeposits(
 
       if (confirmations >= chain.confirmationsRequired) {
         // Credit user balance
-        await prisma.$transaction(async (tx) => {
+        await prisma.$transaction(async (tx: PrismaClient) => {
           await tx.deposit.update({
             where: { id: deposit.id },
             data: {
